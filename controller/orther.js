@@ -4,7 +4,7 @@ const streamVideosServer = async (req, res) => {
   const { user_id, API_KEY } = req.body;
 
   const API_SECRET =
-    "f2c5eup4zn4bfhm7epekzq4z9v5bucunk59anshe9w6ysr8mz6ph9acufund82pv";
+    "k7q35a52x6kwca4tgq3fpg8dcvbkyqkzu46t3aqgsr5mgh64gftdx5mndrme353f";
   const serverClient = StreamChat.getInstance(API_KEY, API_SECRET);
   try {
     const userToken = serverClient.createToken(user_id);

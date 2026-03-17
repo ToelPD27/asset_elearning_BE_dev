@@ -562,22 +562,134 @@ const deleteOldVideo = async (req, res) => {
   }
 };
 
+const uploadImage = async (req, res) => {
+  console.log("--- Starting Image Upload ---");
+  const startTime = Date.now();
+
+  const file = req.file;
+  // 1. ตรวจสอบไฟล์และประเภทไฟล์ (Validation)
+  if (!file) {
+    console.error("❌ [Upload Error] No file received");
+    return res.status(400).json({ message: "กรุณาเลือกรูปภาพ" });
+  }
+
+  if (!file.mimetype.startsWith("image/")) {
+    return res
+      .status(400)
+      .json({ message: "กรุณาอัปโหลดไฟล์ประเภทรูปภาพเท่านั้น" });
+  }
+
+  console.log(
+    `📦 Image received: ${file.originalname} (${(file.size / 1024).toFixed(2)} KB)`,
+  );
+
+  // ตั้งชื่อไฟล์ใหม่ (แนะนำให้ใส่ Timestamp เพื่อป้องกันชื่อซ้ำ)
+  const fileExtension = file.originalname.split(".").pop();
+  const fileName = `images/${Date.now()}-${Math.round(Math.random() * 1e9)}.${fileExtension}`;
+  const filePath = file.path;
+
+  try {
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`File not found on disk at ${filePath}`);
+    }
+
+    const fileStream = fs.createReadStream(filePath);
+
+    // ใช้ Upload สำหรับ R2 (S3 Compatible)
+    const parallelUploads3 = new Upload({
+      client: r2,
+      params: {
+        Bucket: process.env.R2_BUCKET_NAME,
+        Key: fileName,
+        Body: fileStream,
+        ContentType: file.mimetype,
+        // สำหรับรูปภาพที่ต้องการให้เปิดดูได้ทันทีผ่าน URL
+        ACL: "public-read",
+      },
+      // สำหรับรูปภาพ ไม่ต้องใช้ Queue เยอะ
+      queueSize: 4,
+      partSize: 5 * 1024 * 1024, // 5MB
+    });
+
+    // ส่วน Progress (ถ้ารูปเล็กมากอาจจะวิ่งไป 100% ทันที)
+    parallelUploads3.on("httpUploadProgress", (progress) => {
+      if (progress.total) {
+        const percentage = Math.round((progress.loaded / progress.total) * 100);
+
+        // ส่ง Progress ไปยัง Clients (ถ้ามีระบบ SSE)
+        if (typeof progressClients !== "undefined") {
+          progressClients.forEach((client) => {
+            client.res.write(`data: ${JSON.stringify({ percentage })}\n\n`);
+          });
+        }
+      }
+    });
+
+    console.log("⏳ Uploading image to R2...");
+    await parallelUploads3.done();
+
+    const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+    console.log(`✅ Image upload finished in ${duration}s`);
+
+    // ส่ง URL กลับไปให้ Frontend
+    res.status(200).json({
+      message: "อัปโหลดรูปภาพสำเร็จ!",
+      url: `${process.env.R2_PUBLIC_URL}/${fileName}`,
+      fileName: fileName,
+    });
+
+    // ลบไฟล์ชั่วคราวออกจาก Server หลังอัปโหลดเสร็จ
+    fs.unlink(filePath, (err) => {
+      if (err) console.error("Cleanup Error:", err);
+    });
+  } catch (error) {
+    console.error("❌ [Critical Image Upload Error]:", error);
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+
+    res.status(500).json({
+      message: "เกิดข้อผิดพลาดในการอัปโหลดรูปภาพ",
+      error: error.message,
+    });
+  }
+};
+
 const deleteOldImage = async (req, res) => {
   try {
-    const { url_OldKey } = req.body;
+    const { url_OldKey } = req.body; // รับค่า: https://pub-.../videos/EP1%20The%20...mp4
+
+    if (!url_OldKey) {
+      return res.status(400).json({ message: "ไม่พบ URL ที่ต้องการลบ" });
+    }
+
+    const urlObj = new URL(url_OldKey);
+    const fileKey = decodeURIComponent(urlObj.pathname.substring(1));
+    console.log("🎯 Target Key to delete:", fileKey);
+
     const deleteParams = {
       Bucket: process.env.R2_BUCKET_NAME,
-      Key: url_OldKey, // เช่น "Image/old-video.mp4"
+      Key: fileKey,
     };
+
     await r2.send(new DeleteObjectCommand(deleteParams));
-    console.log("--- Old file deleted from R2 ---");
+
+    console.log("--- Old file deleted from R2 successfully ---");
+
+    if (res) {
+      res.status(200).json({ message: "ลบไฟล์เก่าสำเร็จ", key: fileKey });
+    }
   } catch (err) {
     console.error("Delete Error:", err);
+    if (res) {
+      res
+        .status(500)
+        .json({ message: "ไม่สามารถลบไฟล์ได้", error: err.message });
+    }
   }
 };
 
 module.exports = {
   uploadVideo,
+  uploadImage,
   newCourse,
   UpdateCourse,
   AddStation,
@@ -589,5 +701,6 @@ module.exports = {
   subscribeProgress,
   update_status_course,
   deleteOldVideo,
+  deleteOldImage,
   deleteStation,
 };

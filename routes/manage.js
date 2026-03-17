@@ -8,12 +8,14 @@ const {
   UpdateCourse,
   deleteCourse,
   uploadVideo,
+  uploadImage,
   get_enrollment,
   update_enroll,
   uploadLargeVideo,
   subscribeProgress,
   update_status_course,
   deleteOldVideo,
+  deleteOldImage,
   deleteStation,
 } = require("../controller/manage.js");
 
@@ -42,6 +44,20 @@ const uploadlageVideo = multer({
   limits: { fileSize: 4 * 1024 * 1024 * 1024 }, // 4 GB (4,294,967,296 bytes)
 });
 
+const storageImage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, "uploads/"); // ต้องสร้างโฟลเดอร์ uploads รอไว้ด้วย
+  },
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + path.extname(file.originalname));
+  },
+});
+
+const uploadImages = multer({
+  storage: storageImage,
+  limits: { fileSize: 4 * 1024 * 1024 * 1024 }, // 4 GB (4,294,967,296 bytes)
+});
+
 router.post("/manage/newCourse", authAdmin, newCourse);
 router.post("/manage/addStation/:course_id", authAdmin, AddStation);
 router.post(
@@ -51,6 +67,12 @@ router.post(
 );
 router.post("/manage/updateCourse/:course_id", authAdmin, UpdateCourse);
 router.post("/manage/upload", authAdmin, upload.single("video"), uploadVideo);
+router.post(
+  "/manage/uploadImage",
+  authAdmin,
+  uploadImages.single("image"),
+  uploadImage,
+);
 router.post(
   "/manage/upload-lage-video",
   authAdmin,
@@ -69,5 +91,6 @@ router.post(
 );
 
 router.post("/manage/delete_videos", authAdmin, deleteOldVideo);
+router.post("/manage/delete_videos", authAdmin, deleteOldImage);
 
 module.exports = router;
