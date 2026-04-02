@@ -532,8 +532,15 @@ const getCategories = async (req, res) => {
 };
 
 const updateStudentProgress = async (req, res) => {
-  const { user_id, course_id, station_id, video_name, last_second, percent } =
-    req.body;
+  const {
+    user_id,
+    course_id,
+    station_id,
+    video_name,
+    last_second,
+    percent,
+    max_duration,
+  } = req.body;
 
   try {
     // ใช้ station_id และ video_name ร่วมกันในการค้นหา
@@ -559,6 +566,7 @@ const updateStudentProgress = async (req, res) => {
         last_watched_second: last_second,
         max_watched_second: newMaxWatching,
         progress_percent: newPercent,
+        max_duration: max_duration,
         is_completed: newPercent >= 95 || progress.is_completed,
       });
     } else {
@@ -570,6 +578,7 @@ const updateStudentProgress = async (req, res) => {
         last_watched_second: last_second,
         max_watched_second: last_second,
         progress_percent: percent,
+        max_duration: max_duration,
         is_completed: percent >= 95,
       });
     }
@@ -607,6 +616,7 @@ const getProgress = async (req, res) => {
         "progress_percent",
         "is_completed",
         "updatedAt",
+        "max_duration",
       ],
       where: {
         user_id,

@@ -76,7 +76,12 @@ module.exports = (sequelize) => {
         type: DataTypes.TEXT,
         allowNull: true, // ใช้สำหรับระบบ Auto Login
       },
-
+      deactive_user: {
+        type: DataTypes.TINYINT(1),
+        allowNull: false,
+        defaultValue: 0,
+        comment: "0 = Active, 1 = Deactive",
+      },
       address: {
         type: DataTypes.JSON,
         allowNull: true,
@@ -91,10 +96,10 @@ module.exports = (sequelize) => {
             return {}; // ถ้าข้อมูลพัง คืนค่า Object ว่างป้องกัน Frontend พัง
           }
         },
-        set(value) {
-          // แปลง Object ให้เป็น String ก่อนบันทึกลง Longtext ของ MariaDB
-          this.setDataValue("address", value ? JSON.stringify(value) : null);
-        },
+        // set(value) {
+        //   // แปลง Object ให้เป็น String ก่อนบันทึกลง Longtext ของ MariaDB
+        //   this.setDataValue("address", value ? JSON.stringify(value) : null);
+        // },
       },
     },
     {

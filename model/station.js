@@ -39,13 +39,13 @@ module.exports = (sequelize) => {
             return [];
           }
         },
-        // เพิ่มส่วนนี้เพื่อความชัวร์ตอน Save/Update
-        set(value) {
-          this.setDataValue(
-            "videos",
-            typeof value === "object" ? JSON.stringify(value) : value,
-          );
-        },
+        // // เพิ่มส่วนนี้เพื่อความชัวร์ตอน Save/Update
+        // set(value) {
+        //   this.setDataValue(
+        //     "videos",
+        //     typeof value === "object" ? JSON.stringify(value) : value,
+        //   );
+        // },
       },
     },
     {
