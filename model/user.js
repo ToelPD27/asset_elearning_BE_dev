@@ -40,6 +40,13 @@ module.exports = (sequelize) => {
         validate: { isEmail: true },
         comment: "อีเมลสำหรับใช้ส่งข่าวสารหรือติดต่อ",
       },
+      useridentifier: {
+        type: DataTypes.STRING(255),
+        allowNull: true,
+        unique: "idx_unique_useridentifier_apple",
+        // ลบ validate isEmail ออกหากฟิลด์นี้เก็บ Apple ID (Subject Identifier)
+        comment: "Unique ID จาก Provider หรือ Email สำหรับติดต่อ",
+      },
       password: {
         type: DataTypes.STRING(255),
         allowNull: true,
@@ -68,7 +75,7 @@ module.exports = (sequelize) => {
         defaultValue: "user",
       },
       login_method: {
-        type: DataTypes.ENUM("internal", "google_email"),
+        type: DataTypes.ENUM("internal", "google_email", "apple_id"),
         allowNull: false,
         defaultValue: "internal",
       },

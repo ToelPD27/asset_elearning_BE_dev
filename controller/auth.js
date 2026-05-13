@@ -151,6 +151,89 @@ const loginGoogle = async (req, res) => {
   }
 };
 
+const loginApple = async (req, res) => {
+  try {
+    const { useridentifier } = req.body;
+
+    if (!useridentifier) {
+      return res
+        .status(400)
+        .json({ message: "ระบุ identifier ที่ต้องการเข้าใช้งาน" });
+    }
+
+    // 1. ค้นหา User
+    const user = await User.findOne({
+      where: {
+        useridentifier: useridentifier,
+        login_method: "apple_id",
+      },
+    });
+
+    // 2. ถ้าไม่พบ User
+    if (!user) {
+      return res.status(404).json({
+        message:
+          "ไม่พบบัญชีผู้ใช้งานนี้ในระบบ กรุณาติดต่อผู้ดูแลเพื่อเพิ่มสิทธิ์การเข้าใช้งาน",
+      });
+    }
+
+    // 3. เช็คสถานะการระงับใช้งาน (Deactivated)
+    // ใช้ 403 Forbidden เพราะเป็นการปฏิเสธสิทธิ์การเข้าถึง
+    if (Number(user.deactive_user) === 1) {
+      return res.status(403).json({
+        message:
+          "บัญชี Apple นี้ถูกระงับการใช้งานชั่วคราว กรุณาติดต่อฝ่ายสนับสนุน",
+      });
+    }
+
+    // 4. ดึงข้อมูลการลงทะเบียน (Enrollments)
+    const userEnrollments = await Enrollment.findAll({
+      where: {
+        user_id: user.user_id,
+        status: ["success", "pending"],
+      },
+      attributes: [
+        "course_id",
+        "status",
+        "payment_method",
+        "createdAt",
+        "complete_status",
+        "price_at_purchase",
+      ],
+    });
+
+    // 5. สร้าง Tokens
+    const payload = { id: user.user_id, role: user.role }; // แนะนำให้ใช้ user_id ให้ตรงกัน
+    const accessToken = signAccessToken(payload);
+    const refreshToken = signRefreshToken(payload);
+
+    // 6. ส่งข้อมูลกลับ
+    return res.status(200).json({
+      message: "เข้าสู่ระบบสำเร็จ",
+      accessToken,
+      refreshToken,
+      user: {
+        user_id: user.user_id,
+        first_name: user.first_name,
+        last_name: user.last_name,
+        email: user.email_address,
+        useridentifier: user.useridentifier,
+        role: user.role,
+        enrollments: userEnrollments,
+        imageURL: user.imageURL,
+        birthday: user.birthday,
+        phonenumber: user.phonenumber,
+        address: user.address,
+      },
+    });
+  } catch (err) {
+    console.error("Apple Login Error:", err);
+    res
+      .status(500)
+      .json({ message: "เกิดข้อผิดพลาดภายในระบบ", error: err.message });
+  }
+};
+
 const refreshToken = async (req, res) => {
   try {
     const token = req.body.refreshToken;
@@ -370,4 +453,5 @@ module.exports = {
   loginGoogle,
   refreshToken,
   deactivateAccount,
+  loginApple,
 };

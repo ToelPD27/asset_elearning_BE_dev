@@ -5,6 +5,7 @@ const CourseModel = require("./course.js");
 const StationModel = require("./station.js");
 const EnrollmentModel = require("./enrollment.js");
 const User_progressModel = require("./user_progress.js");
+const NotificationModel = require("./notification.js");
 
 const User = UserModel(sequelize);
 const Category = CategoryModel(sequelize);
@@ -12,6 +13,7 @@ const Course = CourseModel(sequelize);
 const Station = StationModel(sequelize);
 const Enrollment = EnrollmentModel(sequelize);
 const User_Progress = User_progressModel(sequelize);
+const Notification = NotificationModel(sequelize);
 
 // 2. Define Associations (แบบ String-based)
 
@@ -118,5 +120,6 @@ module.exports = {
   Station,
   Enrollment,
   User_Progress,
+  Notification,
   syncDB,
 };

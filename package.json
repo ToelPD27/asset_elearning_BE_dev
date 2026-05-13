@@ -22,6 +22,7 @@
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "dotenv": "^17.2.3",
+    "expo-server-sdk": "^3.15.0",
     "express": "^5.2.1",
     "ffmpeg": "^0.0.4",
     "ffmpeg-static": "^5.3.0",
