@@ -9,9 +9,203 @@ const { Op } = require("sequelize");
 const { Upload } = require("@aws-sdk/lib-storage");
 const r2 = require("../libs/r2Client.js");
 const fs = require("fs");
-const { PutObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
-
 const path = require("path");
+const {
+  PutObjectCommand,
+  DeleteObjectsCommand,
+  ListObjectsV2Command,
+} = require("@aws-sdk/client-s3");
+const ffmpeg = require("fluent-ffmpeg");
+const ffmpegPath = require("ffmpeg-static");
+const crypto = require("crypto"); // เพิ่มตัวนี้เพื่อสร้างกุญแจสุ่ม
+ffmpeg.setFfmpegPath(ffmpegPath);
+
+let progressClients = [];
+
+const uploadLargeVideo = async (req, res) => {
+  const file = req.file;
+  const { course_id } = req.body;
+
+  if (!file) return res.status(400).json({ message: "ไม่พบไฟล์วิดีโอ" });
+  if (!course_id)
+    return res.status(400).json({ message: "กรุณาระบุ course_id" });
+
+  const originalname = file.originalname.split(".").slice(0, -1).join(".");
+  const safeName = originalname.replace(/[^a-z0-9]/gi, "_").toLowerCase();
+
+  const now = new Date();
+  const dateStr = `${String(now.getDate()).padStart(2, "0")}${String(now.getMonth() + 1).padStart(2, "0")}${now.getFullYear()}`;
+  const timeStr = `${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
+  const folderName = `${course_id}_${dateStr}_${timeStr}`;
+
+  console.log("Generated Folder Name:", folderName);
+  console.log(
+    `--- Processing HLS for Course: ${folderName} | Video: ${safeName} ---`,
+  );
+
+  const startTime = Date.now();
+  const courseTempParent = path.join(__dirname, "../temp");
+  const folderNameDir = path.join(courseTempParent, folderName);
+  const tempDir = path.join(folderNameDir, safeName);
+
+  if (fs.existsSync(tempDir)) {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+  fs.mkdirSync(tempDir, { recursive: true });
+
+  const inputPath = file.path;
+  const m3u8Path = path.join(tempDir, "index.m3u8");
+
+  try {
+    const key = crypto.randomBytes(16);
+    const keyFileName = "video.key";
+    const keyFilePath = path.join(tempDir, keyFileName);
+    fs.writeFileSync(keyFilePath, key);
+    const keyUrlForPlayer = `${process.env.R2_PUBLIC_URL}/get-key?key=videos/${folderName}/${safeName}/${keyFileName}`;
+    const absoluteKeyPath = path.resolve(keyFilePath);
+    const formattedKeyPath = absoluteKeyPath.replace(/\\/g, "/");
+    const keyInfoContent = `${keyUrlForPlayer}\n${formattedKeyPath}\n\n`;
+
+    const keyInfoPath = path.resolve(tempDir, "key_info.file");
+
+    console.log("--- Debug Key Info ---");
+    console.log("Key URL:", keyUrlForPlayer);
+    console.log("Local Key Path:", formattedKeyPath);
+    console.log("Key Info File Path:", keyInfoPath);
+    console.log("----------------------");
+
+    fs.writeFileSync(keyInfoPath, keyInfoContent, "utf8");
+
+    ffmpeg(inputPath)
+      .outputOptions([
+        "-c:v libx264",
+        "-profile:v main",
+        "-level 3.1",
+        "-pix_fmt yuv420p",
+        "-c:a aac",
+        "-start_number 0",
+        "-hls_time 10",
+        "-hls_list_size 0",
+        "-f hls",
+        "-hls_key_info_file",
+        keyInfoPath.replace(/\\/g, "/"),
+      ])
+      .output(m3u8Path)
+      .on("end", async () => {
+        console.log(`✅ HLS Generated. Starting Sequential Upload to R2...`);
+
+        const generatedFiles = fs.readdirSync(tempDir);
+        const totalFiles = generatedFiles.length;
+        let uploadedCount = 0;
+
+        try {
+          for (const fileName of generatedFiles) {
+            // ข้ามไฟล์ key_info.file ไม่ต้องอัปโหลดขึ้น R2 (ใช้แค่ตอน Encode)
+            if (fileName === "key_info.file") {
+              uploadedCount++; // นับเพิ่มเพื่อให้ progress ครบ 100%
+              continue;
+            }
+
+            const filePath = path.join(tempDir, fileName);
+            const fileStream = fs.createReadStream(filePath);
+
+            const parallelUploads3 = new Upload({
+              client: r2,
+              params: {
+                Bucket: process.env.R2_BUCKET_NAME,
+                Key: `videos/${folderName}/${safeName}/${fileName}`,
+                Body: fileStream,
+                ContentType: fileName.endsWith(".m3u8")
+                  ? "application/x-mpegURL"
+                  : fileName.endsWith(".key")
+                    ? "application/octet-stream"
+                    : "video/MP2T",
+              },
+              partSize: 1024 * 1024 * 10,
+              leavePartsOnError: false,
+            });
+
+            parallelUploads3.on("httpUploadProgress", (progress) => {
+              const totalPercent = Math.round(
+                ((uploadedCount + progress.loaded / progress.total) /
+                  totalFiles) *
+                  100,
+              );
+
+              const progressData = JSON.stringify({
+                totalPercent,
+                currentFile: fileName,
+                fileIndex: uploadedCount + 1,
+                totalFiles,
+              });
+
+              progressClients.forEach((client) => {
+                client.res.write(`data: ${progressData}\n\n`);
+              });
+
+              process.stdout.write(`    🚀 Progress: ${totalPercent}% \r`);
+            });
+
+            await parallelUploads3.done();
+            uploadedCount++;
+          }
+
+          console.log(`\n✅ All files uploaded successfully!`);
+
+          // --- Cleanup ---
+          fs.rmSync(tempDir, { recursive: true, force: true });
+          if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+
+          const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+
+          // เตรียมข้อมูลสำหรับ Return
+          const finalPlaylistUrl = `${process.env.R2_PUBLIC_URL}/videos/${folderName}/${safeName}/index.m3u8`;
+          const finalKeyUrl = `${process.env.R2_PUBLIC_URL}/get-key?key=videos/${folderName}/${safeName}/${keyFileName}`;
+
+          if (!res.headersSent) {
+            return res.status(200).json({
+              message: "อัปโหลดและเข้ารหัสวิดีโอเรียบร้อยแล้ว",
+              data: {
+                video_name: originalname,
+                url: finalPlaylistUrl,
+                key_url: finalKeyUrl,
+                type: "hls",
+                is_encrypted: true,
+                duration: duration, // วินาที (ถ้าต้องการ hh:mm:ss ต้องใช้ ffprobe เพิ่ม)
+              },
+            });
+          }
+        } catch (uploadError) {
+          console.error("\n❌ R2 Upload Error:", uploadError);
+          // Cleanup logic...
+          if (fs.existsSync(courseTempParent))
+            fs.rmSync(courseTempParent, { recursive: true, force: true });
+          if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+          if (!res.headersSent)
+            return res.status(500).json({
+              message: "Storage Upload Failed",
+              error: uploadError.message,
+            });
+        }
+      })
+      .on("error", (err) => {
+        console.error("❌ FFmpeg Error:", err);
+        if (fs.existsSync(courseTempParent))
+          fs.rmSync(courseTempParent, { recursive: true, force: true });
+        if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+        if (!res.headersSent)
+          return res
+            .status(500)
+            .json({ message: "FFmpeg Error", error: err.message });
+      })
+      .run();
+  } catch (error) {
+    console.error("❌ System Error:", error);
+    if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+    if (!res.headersSent)
+      return res.status(500).json({ message: "Internal Error" });
+  }
+};
 
 const uploadVideo = async (req, res) => {
   console.log("--- New Upload Request ---");
@@ -50,97 +244,6 @@ const uploadVideo = async (req, res) => {
     res.status(500).json({
       message: "เกิดข้อผิดพลาดในการอัปโหลด",
       error: error.message,
-    });
-  }
-};
-// ตัวแปรสำหรับเก็บการเชื่อมต่อ (ในไฟล์ controller หรือข้างนอก function)
-let progressClients = [];
-
-const uploadLargeVideo = async (req, res) => {
-  console.log("--- Starting Large File Upload ---");
-  const startTime = Date.now();
-
-  const file = req.file;
-  if (!file) {
-    console.error("❌ [Upload Error] No file received in req.file");
-    return res.status(400).json({ message: "กรุณาเลือกไฟล์วิดีโอ" });
-  }
-
-  // ดูขนาดไฟล์ที่เข้ามาจริง
-  console.log(
-    `📦 File received: ${file.originalname} (${(file.size / (1024 * 1024)).toFixed(2)} MB)`,
-  );
-  console.log(`📍 Local path: ${file.path}`);
-
-  const fileName = `videos/${file.originalname}`;
-  const filePath = file.path;
-
-  try {
-    // ตรวจสอบว่าไฟล์บน Disk มีอยู่จริงไหมก่อนเริ่ม
-    if (!fs.existsSync(filePath)) {
-      throw new Error(`File not found on disk at ${filePath}`);
-    }
-
-    const fileStream = fs.createReadStream(filePath);
-
-    // ดักจับ Error ที่เกิดจาก Stream เอง (เช่น Disk มีปัญหา)
-    fileStream.on("error", (err) => console.error("🔴 Stream Error:", err));
-
-    const parallelUploads3 = new Upload({
-      client: r2,
-      params: {
-        Bucket: process.env.R2_BUCKET_NAME,
-        Key: fileName,
-        Body: fileStream,
-        ContentType: file.mimetype,
-      },
-      queueSize: 2, // ลดลงเหลือ 2 เพื่อความเสถียรสำหรับไฟล์ใหญ่มาก
-      partSize: 20 * 1024 * 1024, // เพิ่มเป็น 20MB ลดจำนวนรอบการส่ง
-    });
-
-    parallelUploads3.on("httpUploadProgress", (progress) => {
-      if (progress.total) {
-        const percentage = Math.round((progress.loaded / progress.total) * 100);
-        // Log ดูใน Console ด้วยว่ามันหยุดที่กี่ %
-        if (percentage % 10 === 0)
-          console.log(`🚀 Upload Progress: ${percentage}%`);
-
-        progressClients.forEach((client) => {
-          client.res.write(`data: ${JSON.stringify({ percentage })}\n\n`);
-        });
-      }
-    });
-
-    console.log("⏳ Uploading to R2...");
-    await parallelUploads3.done();
-
-    const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-    console.log(`✅ Upload finished in ${duration}s`);
-
-    res.status(200).json({
-      message: "อัปโหลดวิดีโอสำเร็จ!",
-      url: `${process.env.R2_PUBLIC_URL}/${fileName}`,
-      fileName: fileName,
-    });
-
-    // Cleanup
-    fs.unlink(filePath, (err) => {
-      if (err) console.error("Cleanup Error (Async):", err);
-    });
-  } catch (error) {
-    console.error("❌ [Critical Upload Error]:", {
-      message: error.message,
-      stack: error.stack,
-      code: error.code, // ดูรหัส Error เช่น 'ECONNRESET' หรือ 'ETIMEDOUT'
-      name: error.name,
-    });
-
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-
-    res.status(500).json({
-      message: "เกิดข้อผิดพลาดในการอัปโหลด",
-      error: error.message,
-      code: error.code,
     });
   }
 };
@@ -530,6 +633,166 @@ const update_status_course = async (req, res) => {
 
 const deleteOldVideo = async (req, res) => {
   try {
+    const { url_OldKey } = req.body;
+
+    if (!url_OldKey) {
+      return res.status(400).json({ message: "ไม่พบ URL ที่ต้องการลบ" });
+    }
+
+    const urlObj = new URL(url_OldKey);
+    let fullPath = decodeURIComponent(urlObj.pathname.substring(1));
+
+    // --- ส่วนที่ปรับปรุง: ดึงเอาเฉพาะโฟลเดอร์ออกมา ---
+    // ไม่ว่า URL จะจบด้วย / หรือ index.m3u8
+    // โค้ดนี้จะเอาเฉพาะ Path ของ Folder มาให้เสมอ
+    let folderPrefix = fullPath;
+    if (fullPath.includes(".")) {
+      folderPrefix = path.dirname(fullPath);
+    }
+
+    // ตรวจสอบให้แน่ใจว่า Prefix ลงท้ายด้วย / เพื่อลบทุกอย่างข้างใน
+    if (!folderPrefix.endsWith("/")) {
+      folderPrefix += "/";
+    }
+
+    console.log("🎯 Target Prefix to delete:", folderPrefix);
+
+    const listParams = {
+      Bucket: process.env.R2_BUCKET_NAME,
+      Prefix: folderPrefix,
+    };
+
+    const listedObjects = await r2.send(new ListObjectsV2Command(listParams));
+
+    if (!listedObjects.Contents || listedObjects.Contents.length === 0) {
+      return res
+        .status(200)
+        .json({ message: "ไม่พบไฟล์ หรือลบไปก่อนหน้าแล้ว" });
+    }
+
+    // เตรียมรายการไฟล์ (Batch Delete)
+    const deleteParams = {
+      Bucket: process.env.R2_BUCKET_NAME,
+      Delete: {
+        Objects: listedObjects.Contents.map(({ Key }) => ({ Key })),
+        Quiet: true, // ลด Payload ขาตอบกลับเพื่อความเร็ว
+      },
+    };
+
+    await r2.send(new DeleteObjectsCommand(deleteParams));
+
+    console.log(
+      `--- Folder ${folderPrefix} deleted (${listedObjects.Contents.length} files) ---`,
+    );
+
+    if (res) {
+      res.status(200).json({
+        message: "ลบโฟลเดอร์สำเร็จ",
+        deletedCount: listedObjects.Contents.length,
+        path: folderPrefix,
+      });
+    }
+  } catch (err) {
+    console.error("Delete Error:", err);
+    if (res) {
+      res.status(500).json({ message: "ระบบลบขัดข้อง", error: err.message });
+    }
+  }
+};
+
+const uploadImage = async (req, res) => {
+  console.log("--- Starting Image Upload ---");
+  const startTime = Date.now();
+
+  const file = req.file;
+  // 1. ตรวจสอบไฟล์และประเภทไฟล์ (Validation)
+  if (!file) {
+    console.error("❌ [Upload Error] No file received");
+    return res.status(400).json({ message: "กรุณาเลือกรูปภาพ" });
+  }
+
+  if (!file.mimetype.startsWith("image/")) {
+    return res
+      .status(400)
+      .json({ message: "กรุณาอัปโหลดไฟล์ประเภทรูปภาพเท่านั้น" });
+  }
+
+  console.log(
+    `📦 Image received: ${file.originalname} (${(file.size / 1024).toFixed(2)} KB)`,
+  );
+
+  // ตั้งชื่อไฟล์ใหม่ (แนะนำให้ใส่ Timestamp เพื่อป้องกันชื่อซ้ำ)
+  const fileExtension = file.originalname.split(".").pop();
+  const fileName = `images/${Date.now()}-${Math.round(Math.random() * 1e9)}.${fileExtension}`;
+  const filePath = file.path;
+
+  try {
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`File not found on disk at ${filePath}`);
+    }
+
+    const fileStream = fs.createReadStream(filePath);
+
+    // ใช้ Upload สำหรับ R2 (S3 Compatible)
+    const parallelUploads3 = new Upload({
+      client: r2,
+      params: {
+        Bucket: process.env.R2_BUCKET_NAME,
+        Key: fileName,
+        Body: fileStream,
+        ContentType: file.mimetype,
+        // สำหรับรูปภาพที่ต้องการให้เปิดดูได้ทันทีผ่าน URL
+        ACL: "public-read",
+      },
+      // สำหรับรูปภาพ ไม่ต้องใช้ Queue เยอะ
+      queueSize: 4,
+      partSize: 5 * 1024 * 1024, // 5MB
+    });
+
+    // ส่วน Progress (ถ้ารูปเล็กมากอาจจะวิ่งไป 100% ทันที)
+    parallelUploads3.on("httpUploadProgress", (progress) => {
+      if (progress.total) {
+        const percentage = Math.round((progress.loaded / progress.total) * 100);
+
+        // ส่ง Progress ไปยัง Clients (ถ้ามีระบบ SSE)
+        if (typeof progressClients !== "undefined") {
+          progressClients.forEach((client) => {
+            client.res.write(`data: ${JSON.stringify({ percentage })}\n\n`);
+          });
+        }
+      }
+    });
+
+    console.log("⏳ Uploading image to R2...");
+    await parallelUploads3.done();
+
+    const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+    console.log(`✅ Image upload finished in ${duration}s`);
+
+    // ส่ง URL กลับไปให้ Frontend
+    res.status(200).json({
+      message: "อัปโหลดรูปภาพสำเร็จ!",
+      url: `${process.env.R2_PUBLIC_URL}/${fileName}`,
+      fileName: fileName,
+    });
+
+    // ลบไฟล์ชั่วคราวออกจาก Server หลังอัปโหลดเสร็จ
+    fs.unlink(filePath, (err) => {
+      if (err) console.error("Cleanup Error:", err);
+    });
+  } catch (error) {
+    console.error("❌ [Critical Image Upload Error]:", error);
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+
+    res.status(500).json({
+      message: "เกิดข้อผิดพลาดในการอัปโหลดรูปภาพ",
+      error: error.message,
+    });
+  }
+};
+
+const deleteOldImage = async (req, res) => {
+  try {
     const { url_OldKey } = req.body; // รับค่า: https://pub-.../videos/EP1%20The%20...mp4
 
     if (!url_OldKey) {
@@ -562,22 +825,9 @@ const deleteOldVideo = async (req, res) => {
   }
 };
 
-const deleteOldImage = async (req, res) => {
-  try {
-    const { url_OldKey } = req.body;
-    const deleteParams = {
-      Bucket: process.env.R2_BUCKET_NAME,
-      Key: url_OldKey, // เช่น "Image/old-video.mp4"
-    };
-    await r2.send(new DeleteObjectCommand(deleteParams));
-    console.log("--- Old file deleted from R2 ---");
-  } catch (err) {
-    console.error("Delete Error:", err);
-  }
-};
-
 module.exports = {
   uploadVideo,
+  uploadImage,
   newCourse,
   UpdateCourse,
   AddStation,
@@ -589,5 +839,6 @@ module.exports = {
   subscribeProgress,
   update_status_course,
   deleteOldVideo,
+  deleteOldImage,
   deleteStation,
 };

@@ -11,7 +11,9 @@ const {
   edit_profile,
   uploadImage,
   registerGoogle,
+  registerApple,
   getLastWatching,
+  updateLearningStatus,
 } = require("../controller/user.js");
 const { authUser, identifyUser } = require("../middleware/auth.js");
 
@@ -28,6 +30,7 @@ const upload = multer({
 router.get("/getCourse", identifyUser, getCourse);
 router.post("/register", register);
 router.post("/register_google", registerGoogle);
+router.post("/register_apple", registerApple);
 router.post("/enrollments", authUser, enrollments);
 router.post("/syncUser", authUser, syncUser);
 router.get("/categories", getCategories);
@@ -37,5 +40,6 @@ router.post("/getProgressCourse", authUser, getProgressCourse);
 router.post("/edit_profile/:user_id", authUser, edit_profile);
 router.post("/uploadImages", authUser, upload.single("image"), uploadImage);
 router.post("/getLastWhatching", authUser, getLastWatching);
+router.post("/updateLearningStatus", authUser, updateLearningStatus);
 
 module.exports = router;

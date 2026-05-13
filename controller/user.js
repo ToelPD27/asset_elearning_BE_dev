@@ -10,6 +10,7 @@ const { Op } = require("sequelize");
 const r2 = require("../libs/r2Client.js");
 const { PutObjectCommand } = require("@aws-sdk/client-s3");
 const path = require("path");
+const user = require("../model/user.js");
 
 const uploadImage = async (req, res) => {
   try {
@@ -303,6 +304,98 @@ const registerGoogle = async (req, res) => {
   }
 };
 
+const registerApple = async (req, res) => {
+  try {
+    const {
+      prefix,
+      first_name,
+      last_name,
+      email_address,
+      useridentifier,
+      phonenumber,
+      role,
+      imageURL,
+      birthday,
+      login_method,
+      address,
+    } = req.body;
+
+    // 1. ตรวจสอบว่ามี Email และ Login Method นี้อยู่แล้วหรือไม่
+    // ใช้ findOne จะมีประสิทธิภาพมากกว่า findAll ในกรณีที่ต้องการเช็กแค่ว่า "มีหรือไม่มี"
+    const existingUser = await User.findOne({
+      where: {
+        useridentifier: useridentifier, // เปลี่ยนมาเช็คที่ useridentifier แทน email_address สำหรับ Apple ID
+        email_address: email_address,
+        login_method: "apple_id",
+      },
+    });
+
+    // 2. ถ้ามีข้อมูลอยู่แล้ว ให้ส่ง Error กลับไปทันที
+    if (existingUser) {
+      return res.status(400).json({
+        status: "error",
+        message: "อีเมลนี้ถูกลงทะเบียนด้วย Apple ID ไว้แล้วในระบบ",
+      });
+    }
+
+    // --- ขั้นตอนการสร้าง User ID ใหม่ (เหมือนเดิม) ---
+    const lastUser = await User.findOne({
+      where: { user_id: { [Op.like]: "USR%" } },
+      order: [["user_id", "DESC"]],
+    });
+
+    let newUserId = "USR0001";
+    if (lastUser) {
+      const lastIdNumber = parseInt(lastUser.user_id.replace("USR", ""));
+      const nextIdNumber = lastIdNumber + 1;
+      newUserId = `USR${nextIdNumber.toString().padStart(4, "0")}`;
+    }
+
+    // --- ขั้นตอนการบันทึกข้อมูล ---
+    const newUser = await User.create({
+      user_id: newUserId,
+      prefix,
+      first_name,
+      last_name,
+      email: email_address,
+      email_address: email_address,
+      useridentifier,
+      phonenumber,
+      birthday: birthday,
+      role,
+      login_method,
+      address,
+      imageURL,
+    });
+
+    return res.status(201).json({
+      status: "success",
+      message: "Apple ID type registered successfully",
+      data: {
+        id: newUser.id,
+        user_id: newUser.user_id,
+        useridentifier: newUser.useridentifier,
+        email_address: newUser.email_address,
+        role: newUser.role,
+      },
+    });
+  } catch (error) {
+    console.error("❌ Register Apple Error:", error);
+
+    if (error.name === "SequelizeUniqueConstraintError") {
+      return res.status(400).json({
+        status: "error",
+        message: "Email already exists (Unique Constraint).",
+      });
+    }
+
+    return res.status(500).json({
+      status: "error",
+      message: error.message || "Internal Server Error",
+    });
+  }
+};
+
 // ฟังก์ชันสำหรับสร้าง User ลง DB (เรียกใช้ซ้ำได้)
 const createUserInDB = async (userData) => {
   const {
@@ -532,8 +625,15 @@ const getCategories = async (req, res) => {
 };
 
 const updateStudentProgress = async (req, res) => {
-  const { user_id, course_id, station_id, video_name, last_second, percent } =
-    req.body;
+  const {
+    user_id,
+    course_id,
+    station_id,
+    video_name,
+    last_second,
+    percent,
+    max_duration,
+  } = req.body;
 
   try {
     // ใช้ station_id และ video_name ร่วมกันในการค้นหา
@@ -559,6 +659,7 @@ const updateStudentProgress = async (req, res) => {
         last_watched_second: last_second,
         max_watched_second: newMaxWatching,
         progress_percent: newPercent,
+        max_duration: max_duration,
         is_completed: newPercent >= 95 || progress.is_completed,
       });
     } else {
@@ -570,6 +671,7 @@ const updateStudentProgress = async (req, res) => {
         last_watched_second: last_second,
         max_watched_second: last_second,
         progress_percent: percent,
+        max_duration: max_duration,
         is_completed: percent >= 95,
       });
     }
@@ -607,6 +709,7 @@ const getProgress = async (req, res) => {
         "progress_percent",
         "is_completed",
         "updatedAt",
+        "max_duration",
       ],
       where: {
         user_id,
@@ -785,10 +888,67 @@ const edit_profile = async (req, res) => {
   }
 };
 
+const updateLearningStatus = async (req, res) => {
+  try {
+    const { user_id, course_id } = req.body;
+
+    // 1. Basic validation
+    if (!user_id || !course_id) {
+      return res.status(400).json({
+        status: "error",
+        message: "user_id and course_id are required",
+      });
+    }
+
+    const enrollment = await Enrollment.findOne({
+      where: { user_id, course_id },
+    });
+
+    if (!enrollment) {
+      return res.status(404).json({
+        status: "error",
+        message: "ไม่พบข้อมูลการลงทะเบียนสำหรับผู้ใช้และคอร์สนี้",
+      });
+    }
+
+    // --- ส่วนที่เพิ่มการเช็คสถานะ ---
+    if (enrollment.learning_status === "complete") {
+      return res.status(200).json({
+        status: "success",
+        message: "คอร์สนี้ถูกเรียนจบ (complete) ไปก่อนหน้านี้เรียบร้อยแล้ว",
+        data: {
+          learning_status: enrollment.learning_status,
+        },
+      });
+    }
+    // ----------------------------
+
+    // 2. Update and save (กรณีที่ยังไม่เป็น complete)
+    enrollment.learning_status = "complete";
+    await enrollment.save();
+
+    // 3. Send a success response
+    return res.status(200).json({
+      status: "success",
+      message: "ปรับปรุงสถานะการเรียนเป็นเรียนจบเรียบร้อยแล้ว",
+      data: {
+        learning_status: enrollment.learning_status,
+      },
+    });
+  } catch (error) {
+    console.error("Error updating learning status:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Internal Server Error",
+    });
+  }
+};
+
 module.exports = {
   getCourse,
   register,
   registerGoogle,
+  registerApple,
   createUserInDB,
   enrollments,
   syncUser,
@@ -799,4 +959,5 @@ module.exports = {
   edit_profile,
   uploadImage,
   getLastWatching,
+  updateLearningStatus,
 };

@@ -33,6 +33,10 @@ module.exports = (sequelize) => {
         type: DataTypes.INTEGER,
         defaultValue: 0,
       },
+      max_duration: {
+        type: DataTypes.INTEGER,
+        defaultValue: 0,
+      },
       progress_percent: {
         type: DataTypes.INTEGER,
         defaultValue: 0,

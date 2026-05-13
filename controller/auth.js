@@ -19,13 +19,19 @@ const signRefreshToken = (payload) =>
 const login = async (req, res) => {
   try {
     const { email, password } = req.body;
-    // หา User จาก email
     const user = await User.findOne({
       where: { email, role: ["user", "Admin"] },
     });
-    // ตรวจสอบ password โดยใช้ prototype method จาก model
+
     if (user && (await user.comparePassword(password))) {
-      // สร้าง Payload ที่รวม Role เข้าไปด้วย
+      // --- เพิ่มการเช็ค deactive_user ตรงนี้ ---
+      if (user.deactive_user === 1) {
+        return res.status(409).json({
+          message: "บัญชีนี้ถูกระงับการใช้งาน กรุณาติดต่อผู้ดูแลระบบ",
+        });
+      }
+      // ------------------------------------
+
       const userEnrollments = await Enrollment.findAll({
         where: {
           user_id: user.user_id,
@@ -40,15 +46,11 @@ const login = async (req, res) => {
           "price_at_purchase",
         ],
       });
-      const payload = {
-        id: user.id,
-        role: user.role, // เพิ่มบทบาท (user, employee, Admin) เข้าไปใน Token
-      };
+
+      const payload = { id: user.id, role: user.role };
       const accessToken = signAccessToken(payload);
       const refreshToken = signRefreshToken(payload);
-      // บันทึก Refresh Token ลง DB (ใช้สำหรับเช็กเวลา Refresh)
-      // await user.update({ refreshToken });
-      // ส่งข้อมูลกลับไปให้ Frontend
+
       return res.json({
         message: "Login Success",
         accessToken,
@@ -84,15 +86,13 @@ const loginGoogle = async (req, res) => {
       return res.status(400).json({ message: "ระบุอีเมลที่ต้องการเข้าใช้งาน" });
     }
 
-    // 1. ค้นหา User จาก email อย่างเดียว (ไม่สร้างใหม่)
     const user = await User.findOne({
       where: {
         email: email,
-        login_method: "google_email", // ตรวจสอบว่าต้องเป็นบัญชีที่ผูกกับ Google เท่านั้น
+        login_method: "google_email",
       },
     });
 
-    // 2. ถ้าไม่พบ User ในระบบ
     if (!user) {
       return res.status(404).json({
         message:
@@ -100,7 +100,14 @@ const loginGoogle = async (req, res) => {
       });
     }
 
-    // 3. ถ้าพบ User ให้ดึงข้อมูลที่เกี่ยวข้องตามปกติ
+    // --- เพิ่มการเช็ค deactive_user ตรงนี้ ---
+    if (user.deactive_user === 1) {
+      return res.status(409).json({
+        message: "บัญชี Google นี้ถูกระงับการใช้งานในระบบชั่วคราว",
+      });
+    }
+    // ------------------------------------
+
     const userEnrollments = await Enrollment.findAll({
       where: {
         user_id: user.user_id,
@@ -116,18 +123,10 @@ const loginGoogle = async (req, res) => {
       ],
     });
 
-    // 4. ออก JWT Token (accessToken, refreshToken)
-    const payload = {
-      id: user.id,
-      role: user.role,
-    };
-
+    const payload = { id: user.id, role: user.role };
     const accessToken = signAccessToken(payload);
     const refreshToken = signRefreshToken(payload);
 
-    // await user.update({ refreshToken });
-
-    // 5. ส่งข้อมูลกลับ
     return res.json({
       message: "เข้าสู่ระบบสำเร็จ",
       accessToken,
@@ -149,6 +148,89 @@ const loginGoogle = async (req, res) => {
   } catch (err) {
     console.error("Login Error:", err);
     res.status(500).json({ message: "Login Error", error: err.message });
+  }
+};
+
+const loginApple = async (req, res) => {
+  try {
+    const { useridentifier } = req.body;
+
+    if (!useridentifier) {
+      return res
+        .status(400)
+        .json({ message: "ระบุ identifier ที่ต้องการเข้าใช้งาน" });
+    }
+
+    // 1. ค้นหา User
+    const user = await User.findOne({
+      where: {
+        useridentifier: useridentifier,
+        login_method: "apple_id",
+      },
+    });
+
+    // 2. ถ้าไม่พบ User
+    if (!user) {
+      return res.status(404).json({
+        message:
+          "ไม่พบบัญชีผู้ใช้งานนี้ในระบบ กรุณาติดต่อผู้ดูแลเพื่อเพิ่มสิทธิ์การเข้าใช้งาน",
+      });
+    }
+
+    // 3. เช็คสถานะการระงับใช้งาน (Deactivated)
+    // ใช้ 403 Forbidden เพราะเป็นการปฏิเสธสิทธิ์การเข้าถึง
+    if (Number(user.deactive_user) === 1) {
+      return res.status(403).json({
+        message:
+          "บัญชี Apple นี้ถูกระงับการใช้งานชั่วคราว กรุณาติดต่อฝ่ายสนับสนุน",
+      });
+    }
+
+    // 4. ดึงข้อมูลการลงทะเบียน (Enrollments)
+    const userEnrollments = await Enrollment.findAll({
+      where: {
+        user_id: user.user_id,
+        status: ["success", "pending"],
+      },
+      attributes: [
+        "course_id",
+        "status",
+        "payment_method",
+        "createdAt",
+        "complete_status",
+        "price_at_purchase",
+      ],
+    });
+
+    // 5. สร้าง Tokens
+    const payload = { id: user.user_id, role: user.role }; // แนะนำให้ใช้ user_id ให้ตรงกัน
+    const accessToken = signAccessToken(payload);
+    const refreshToken = signRefreshToken(payload);
+
+    // 6. ส่งข้อมูลกลับ
+    return res.status(200).json({
+      message: "เข้าสู่ระบบสำเร็จ",
+      accessToken,
+      refreshToken,
+      user: {
+        user_id: user.user_id,
+        first_name: user.first_name,
+        last_name: user.last_name,
+        email: user.email_address,
+        useridentifier: user.useridentifier,
+        role: user.role,
+        enrollments: userEnrollments,
+        imageURL: user.imageURL,
+        birthday: user.birthday,
+        phonenumber: user.phonenumber,
+        address: user.address,
+      },
+    });
+  } catch (err) {
+    console.error("Apple Login Error:", err);
+    res
+      .status(500)
+      .json({ message: "เกิดข้อผิดพลาดภายในระบบ", error: err.message });
   }
 };
 
@@ -337,9 +419,39 @@ const loginEmployee = async (req, res) => {
   }
 };
 
+const deactivateAccount = async (req, res) => {
+  try {
+    // รับ user_id จาก body ตามที่ Flutter ส่งมา (data: {"user_id": userId})
+    const { user_id } = req.body;
+    const cleanUserId = user_id.trim(); // ตัด space หัวท้าย
+    console.log(`Searching for: "${cleanUserId}"`); // ใส่เครื่องหมายคำพูดเพื่อดูว่ามี space แฝงไหม
+
+    const user = await User.findOne({ where: { user_id: cleanUserId } });
+
+    if (!user) {
+      return res.status(404).json({ status: false, message: "ไม่พบผู้ใช้งาน" });
+    }
+
+    // ปรับสถานะเป็น 1 (Deactive)
+    await user.update({ deactive_user: 1 });
+
+    return res.status(200).json({
+      status: true,
+      message: "ระงับการใช้งานบัญชีเรียบร้อยแล้ว",
+    });
+  } catch (err) {
+    console.error("Deactivate User Error:", err);
+    res
+      .status(500)
+      .json({ status: false, message: "เกิดข้อผิดพลาดเซิร์ฟเวอร์" });
+  }
+};
+
 module.exports = {
   login,
   loginEmployee,
   loginGoogle,
   refreshToken,
+  deactivateAccount,
+  loginApple,
 };
