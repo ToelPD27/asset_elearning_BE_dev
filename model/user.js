@@ -103,10 +103,6 @@ module.exports = (sequelize) => {
             return {}; // ถ้าข้อมูลพัง คืนค่า Object ว่างป้องกัน Frontend พัง
           }
         },
-        // set(value) {
-        //   // แปลง Object ให้เป็น String ก่อนบันทึกลง Longtext ของ MariaDB
-        //   this.setDataValue("address", value ? JSON.stringify(value) : null);
-        // },
       },
     },
     {

@@ -14,6 +14,8 @@ const {
   registerApple,
   getLastWatching,
   updateLearningStatus,
+  forgotPassword,
+  ChangePassword,
 } = require("../controller/user.js");
 const { authUser, identifyUser } = require("../middleware/auth.js");
 
@@ -41,5 +43,7 @@ router.post("/edit_profile/:user_id", authUser, edit_profile);
 router.post("/uploadImages", authUser, upload.single("image"), uploadImage);
 router.post("/getLastWhatching", authUser, getLastWatching);
 router.post("/updateLearningStatus", authUser, updateLearningStatus);
+router.post("/forgotPassword", forgotPassword);
+router.post("/ChangePassword", authUser, ChangePassword);
 
 module.exports = router;

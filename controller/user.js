@@ -522,6 +522,81 @@ const enrollments = async (req, res) => {
   }
 };
 
+const InAppPurchase = async (req, res) => {
+  const { user_id, course_id, status, payment_method, payment_proof } =
+    req.body;
+
+  try {
+    // 1. ตรวจสอบว่าเคยลงทะเบียนไปแล้วหรือยังฅ
+
+    // เพิ่ม Validation เพื่อเช็คว่ามีค่าส่งมาจริงไหม
+    if (!user_id || !course_id) {
+      return res.status(400).json({
+        status: "error",
+        message: `ข้อมูลไม่ครบ: user_id=${user_id}, course_id=${course_id}`,
+      });
+    }
+
+    const existingEnrollment = await Enrollment.findOne({
+      where: { user_id, course_id },
+    });
+
+    if (existingEnrollment) {
+      // ถ้าเคยมีรายการแล้วแต่สถานะยังเป็น pending เราอาจจะอัปเดตสถานะแทนการสร้างใหม่
+      if (existingEnrollment.status === "pending" && status === "success") {
+        await existingEnrollment.update({ status: "success" });
+        return res.status(200).json({
+          status: "success",
+          message: "อัปเดตสถานะการชำระเงินสำเร็จ",
+          data: existingEnrollment,
+        });
+      }
+      return res
+        .status(400)
+        .json({ status: "error", message: "คุณได้ลงทะเบียนคอร์สนี้ไปแล้ว" });
+    }
+
+    // 2. ดึงข้อมูลคอร์ส
+    const course = await Course.findOne({
+      where: { course_id },
+      attributes: ["fee"],
+    });
+
+    if (!course) {
+      return res
+        .status(404)
+        .json({ status: "error", message: "ไม่พบข้อมูลคอร์ส" });
+    }
+
+    const currentFee = parseFloat(course.fee);
+    await Course.increment("count", {
+      by: 1,
+      where: { course_id: course_id },
+    });
+
+    // 3. สร้างรายการ Enrollment
+    const newEnrollment = await Enrollment.create({
+      user_id,
+      course_id,
+      price_at_purchase: currentFee,
+      payment_method,
+      payment_proof,
+      status: "success",
+    });
+
+    return res.status(201).json({
+      status: "success",
+      message:
+        newEnrollment.status === "success"
+          ? "ยินดีด้วย! คุณเข้าเรียนได้ทันที"
+          : "สร้างรายการสั่งซื้อสำเร็จ",
+      data: newEnrollment,
+    });
+  } catch (error) {
+    return res.status(500).json({ status: "error", message: error.message });
+  }
+};
+
 const syncUser = async (req, res) => {
   const { user_id } = req.body;
   if (!user_id) {
@@ -944,6 +1019,90 @@ const updateLearningStatus = async (req, res) => {
   }
 };
 
+const forgotPassword = async (req, res) => {
+  const { email_address, newPassword } = req.body;
+  try {
+    // 1. เปลี่ยนชื่อตัวแปรจาก User เป็น existingUser เพื่อไม่ให้ซ้ำกับ Model
+    const existingUser = await User.findOne({
+      where: { email_address: email_address },
+    });
+
+    if (!existingUser) {
+      return res.status(404).json({
+        status: "error",
+        message: `ไม่พบผู้ใช้งานที่มีอีเมลนี้ในระบบ ${email_address}`,
+      });
+    }
+
+    // 2. กำหนดค่ารหัสผ่านใหม่ลงไปตรงๆ (ไม่ต้องสั่ง bcrypt.hash เองในนี้)
+    existingUser.password = newPassword;
+
+    // 3. ใช้ .save() เพื่อสั่งบันทึกข้อมูลลง Database
+    // ตัว Sequelize จะรู้ว่า password เปลี่ยนไป และจะไปเรียกก่อนเซฟ (beforeUpdate Hook)
+    // เพื่อแอบใส่ bcrypt.hash(newPassword, 10) ให้คุณโดยอัตโนมัติ!
+    await existingUser.save();
+
+    // 4. ส่ง response กลับหา Frontend เสมอเพื่อไม่ให้ Request ค้าง
+    return res.status(200).json({
+      status: "success",
+      message: "เปลี่ยนรหัสผ่านใหม่สำเร็จแล้ว",
+    });
+  } catch (error) {
+    console.error("Forget Password Error:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Internal Server Error",
+    });
+  }
+};
+
+const ChangePassword = async (req, res) => {
+  const { oldPassword, email_address, newPassword } = req.body;
+
+  try {
+    // 1. ค้นหาผู้ใช้งานจาก Email
+    const existingUser = await User.findOne({
+      where: { email_address: email_address },
+    });
+
+    if (!existingUser) {
+      return res.status(404).json({
+        status: "error",
+        message: `ไม่พบผู้ใช้งานที่มีอีเมลนี้ในระบบ ${email_address}`,
+      });
+    }
+
+    // 2. ใช้ Instance Method จาก Model ในการเช็กรหัสผ่านเดิม
+    const isMatch = await existingUser.comparePassword(oldPassword);
+
+    if (!isMatch) {
+      return res.status(400).json({
+        status: "error",
+        message: "รหัสผ่านเดิมไม่ถูกต้อง",
+      });
+    }
+
+    // 3. กำหนดค่ารหัสผ่านใหม่ลงไปตรงๆ
+    existingUser.password = newPassword;
+
+    // 4. บันทึกข้อมูลลง Database
+    // ตัว `beforeUpdate` hook ใน Model จะทำงานอัตโนมัติเพราะเช็ก user.changed("password") ไว้แล้ว
+    await existingUser.save();
+
+    // 5. ส่ง response กลับหา Frontend
+    return res.status(200).json({
+      status: "success",
+      message: "เปลี่ยนรหัสผ่านใหม่สำเร็จแล้ว",
+    });
+  } catch (error) {
+    console.error("Change Password Error:", error);
+    return res.status(500).json({
+      status: "error",
+      message: "Internal Server Error",
+    });
+  }
+};
+
 module.exports = {
   getCourse,
   register,
@@ -954,10 +1113,12 @@ module.exports = {
   syncUser,
   updateStudentProgress,
   getCategories,
+  forgotPassword,
   getProgress,
   getProgressCourse,
   edit_profile,
   uploadImage,
   getLastWatching,
+  ChangePassword,
   updateLearningStatus,
 };

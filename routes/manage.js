@@ -1,5 +1,6 @@
 const express = require("express");
 const path = require("path");
+const fs = require("fs");
 const { authAdmin } = require("../middleware/auth.js");
 const {
   newCourse,
@@ -17,6 +18,10 @@ const {
   deleteOldVideo,
   deleteOldImage,
   deleteStation,
+  createImage,
+  completeVideoUpload,
+  uploadVideoChunk,
+  cancelVideoUpload,
 } = require("../controller/manage.js");
 
 const router = express.Router();
@@ -58,6 +63,27 @@ const uploadImages = multer({
   limits: { fileSize: 4 * 1024 * 1024 * 1024 }, // 4 GB (4,294,967,296 bytes)
 });
 
+const storageChunks = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const uploadId = req.body.uploadId;
+    if (!uploadId) return cb(new Error("uploadId is required"));
+
+    const dir = path.join(__dirname, "../temp/chunks", uploadId);
+    fs.mkdirSync(dir, { recursive: true });
+    cb(null, dir);
+  },
+  filename: (req, file, cb) => {
+    // pad เลขให้เรียง lexicographically ตรงกับลำดับ chunk จริง (chunk_000000, chunk_000001, ...)
+    const chunkIndex = String(req.body.chunkIndex).padStart(6, "0");
+    cb(null, `chunk_${chunkIndex}`);
+  },
+});
+
+const uploadChunk = multer({
+  storage: storageChunks,
+  limits: { fileSize: 15 * 1024 * 1024 }, // 15MB ต่อ chunk (เผื่อ margin จาก 8MB ที่ frontend หั่นจริง)
+});
+
 router.post("/manage/newCourse", authAdmin, newCourse);
 router.post("/manage/addStation/:course_id", authAdmin, AddStation);
 router.post(
@@ -90,7 +116,25 @@ router.post(
   update_status_course,
 );
 
+router.post(
+  "/manage/create-url-image",
+  authAdmin,
+  uploadImages.single("image"),
+  createImage,
+);
+
 router.post("/manage/delete_videos", authAdmin, deleteOldVideo);
-router.post("/manage/delete_videos", authAdmin, deleteOldImage);
+router.post("/manage/delete_Image", authAdmin, deleteOldImage);
+
+// ----------- new route api -----------
+router.post(
+  "/manage/upload-video-chunk",
+  authAdmin, // ใช้ middleware ตัวเดิมของโปรเจกต์คุณ (import ให้ตรง path จริง)
+  uploadChunk.single("chunk"),
+  uploadVideoChunk,
+);
+
+router.post("/manage/complete-video-upload", authAdmin, completeVideoUpload);
+router.post("/manage/cancel-upload", cancelVideoUpload);
 
 module.exports = router;
