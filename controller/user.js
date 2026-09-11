@@ -6,6 +6,7 @@ const {
   Enrollment,
   User_Progress,
 } = require("../model/index.js");
+
 const { Op } = require("sequelize");
 const r2 = require("../libs/r2Client.js");
 const { PutObjectCommand } = require("@aws-sdk/client-s3");
@@ -68,10 +69,17 @@ const getCourse = async (req, res) => {
     // กำหนดเงื่อนไขเริ่มต้น
     let whereCondition = { status: "active" };
 
-    // ถ้ามีการ Login และ Role เป็น Admin ให้ลบเงื่อนไข status ออก (ดึงทั้งหมด)
     console.log("req user role : ", req.user);
+
     if (req.user && req.user.role === "Admin") {
+      // Admin เห็นทั้งหมด ไม่กรอง status และไม่กรอง tag
       whereCondition = {};
+    } else if (req.user && req.user.role === "employee") {
+      // employee เห็นเฉพาะ tag = employee หรือ all
+      whereCondition.tag = { [Op.in]: ["employee", "all"] };
+    } else {
+      // user ทั่วไป (รวมถึงยังไม่ได้ login) เห็นเฉพาะ tag = user หรือ all
+      whereCondition.tag = { [Op.in]: ["user", "all"] };
     }
 
     const courses = await Course.findAll({
@@ -84,6 +92,7 @@ const getCourse = async (req, res) => {
         "detail",
         "image",
         "status", // แนะนำให้ดึงไปแสดงในหน้า Admin
+        "tag",
         "createdAt",
       ],
       include: [
@@ -396,9 +405,11 @@ const registerApple = async (req, res) => {
   }
 };
 
-// ฟังก์ชันสำหรับสร้าง User ลง DB (เรียกใช้ซ้ำได้)
 const createUserInDB = async (userData) => {
   const {
+    iduser_External, // เพิ่ม
+    accessToken_External, // เพิ่ม
+    refreshToken_External, // เพิ่ม
     email_address,
     password,
     first_name,
@@ -410,104 +421,341 @@ const createUserInDB = async (userData) => {
     address,
   } = userData;
 
-  // 1. เช็คว่ามี User หรือยัง
-  const existingUser = await User.findOne({
-    where: { email: email_address, role: "employee" },
-  });
-  if (existingUser) return existingUser;
+  try {
+    // 1. เช็คว่ามี User หรือยัง
+    const existingUser = await User.findOne({
+      where: { email: email_address, role: "employee" },
+    });
 
-  // 2. Generate ID
-  const lastUser = await User.findOne({
-    where: { user_id: { [Op.like]: "USR%" } },
-    order: [["user_id", "DESC"]],
-  });
-  let newUserId = "USR0001";
-  if (lastUser) {
-    const lastIdNumber = parseInt(lastUser.user_id.replace("USR", ""));
-    newUserId = `USR${(lastIdNumber + 1).toString().padStart(4, "0")}`;
+    if (existingUser) {
+      try {
+        await existingUser.update({
+          iduser_External,
+          accessToken_External,
+          refreshToken_External,
+        });
+        console.log("✅ Existing user found, external tokens synced:", {
+          iduser_External,
+          accessToken_External,
+          refreshToken_External,
+        });
+        return existingUser;
+      } catch (updateError) {
+        console.error("🔴 [UPDATE existingUser] error.name:", updateError.name);
+        console.error(
+          "🔴 [UPDATE existingUser] error.message:",
+          updateError.message,
+        );
+        if (updateError.errors) {
+          console.error(
+            "🔴 [UPDATE existingUser] fields:",
+            updateError.errors.map((e) => ({
+              path: e.path,
+              value: e.value,
+              type: e.type,
+              message: e.message,
+            })),
+          );
+        }
+        if (updateError.parent) {
+          console.error(
+            "🔴 [UPDATE existingUser] sqlMessage:",
+            updateError.parent.sqlMessage,
+          );
+          console.error(
+            "🔴 [UPDATE existingUser] sql code:",
+            updateError.parent.code,
+          );
+        }
+        throw updateError;
+      }
+    }
+
+    // 2. Generate ID
+    let lastUser;
+    try {
+      lastUser = await User.findOne({
+        where: { user_id: { [Op.like]: "USR%" } },
+        order: [["user_id", "DESC"]],
+      });
+    } catch (findLastUserError) {
+      console.error("🔴 [FIND lastUser] error.name:", findLastUserError.name);
+      console.error(
+        "🔴 [FIND lastUser] error.message:",
+        findLastUserError.message,
+      );
+      throw findLastUserError;
+    }
+
+    let newUserId = "USR0001";
+    if (lastUser) {
+      const lastIdNumber = parseInt(lastUser.user_id.replace("USR", ""));
+      newUserId = `USR${(lastIdNumber + 1).toString().padStart(4, "0")}`;
+    }
+
+    // 3. สร้าง User
+    try {
+      const newUser = await User.create({
+        user_id: newUserId,
+        prefix: prefix || "Dr.",
+        first_name,
+        last_name,
+        email: email_address,
+        password: password,
+        email_address: email_address,
+        phonenumber: phonenumber || "-",
+        birthday: birthday || "2001-01-01",
+        role: "employee",
+        login_method: login_method || "internal",
+        address: address || {},
+        iduser_External, // เพิ่ม
+        accessToken_External, // เพิ่ม
+        refreshToken_External, // เพิ่ม
+      });
+
+      console.log("✅ New user created:", newUser.user_id);
+      return newUser;
+    } catch (createError) {
+      console.error("🔴 [CREATE newUser] error.name:", createError.name);
+      console.error("🔴 [CREATE newUser] error.message:", createError.message);
+      if (createError.errors) {
+        console.error(
+          "🔴 [CREATE newUser] fields:",
+          createError.errors.map((e) => ({
+            path: e.path,
+            value: e.value,
+            type: e.type,
+            message: e.message,
+          })),
+        );
+      }
+      if (createError.parent) {
+        console.error(
+          "🔴 [CREATE newUser] sqlMessage:",
+          createError.parent.sqlMessage,
+        );
+        console.error("🔴 [CREATE newUser] sql code:", createError.parent.code);
+      }
+      // ข้อมูลที่พยายามส่งเข้าไป จะได้เทียบกับ sqlMessage ได้ง่ายขึ้น
+      console.error("🔴 [CREATE newUser] payload attempted:", {
+        user_id: newUserId,
+        email: email_address,
+        email_address: email_address,
+        iduser_External,
+        phonenumber: phonenumber || "-",
+      });
+      throw createError;
+    }
+  } catch (error) {
+    // จุดสุดท้าย เผื่อมี error หลุดรอดออกมาจากที่อื่น
+    console.error("🔴 [createUserInDB] Unhandled error name:", error.name);
+    console.error(
+      "🔴 [createUserInDB] Unhandled error message:",
+      error.message,
+    );
+    throw error; // โยนต่อให้ callExternalLogin จับอีกที
   }
-
-  // 3. สร้าง User (ลบ .than ที่สะกดผิดออก)
-  const newUser = await User.create({
-    user_id: newUserId,
-    prefix: prefix || "Dr.",
-    first_name,
-    last_name,
-    email: email_address,
-    password: password, // ส่งตรงๆ ตามที่คุณต้องการเหมือนฟังก์ชันอื่น
-    email_address: email_address,
-    phonenumber: phonenumber || "-",
-    birthday: birthday || "2001-01-01",
-    role: "employee",
-    login_method: login_method || "internal",
-    address: address || {},
-  });
-
-  // console.log("✅ register success for:", newUser);
-  return newUser;
 };
 
 const enrollments = async (req, res) => {
   const { user_id, course_id, status, payment_method, payment_proof } =
     req.body;
 
-  try {
-    // 1. ตรวจสอบว่าเคยลงทะเบียนไปแล้วหรือยังฅ
+  console.log("📥 [enrollments] incoming payload:", {
+    user_id,
+    course_id,
+    status,
+    payment_method,
+    payment_proof,
+  });
 
-    // เพิ่ม Validation เพื่อเช็คว่ามีค่าส่งมาจริงไหม
+  try {
     if (!user_id || !course_id) {
+      console.warn("⚠️ [enrollments] missing required fields:", {
+        user_id,
+        course_id,
+      });
       return res.status(400).json({
         status: "error",
         message: `ข้อมูลไม่ครบ: user_id=${user_id}, course_id=${course_id}`,
       });
     }
 
-    const existingEnrollment = await Enrollment.findOne({
-      where: { user_id, course_id },
-    });
+    // 1. เช็คว่าเคยลงทะเบียนไปแล้วหรือยัง
+    let existingEnrollment;
+    try {
+      existingEnrollment = await Enrollment.findOne({
+        where: { user_id, course_id },
+      });
+      console.log(
+        "🔍 [FIND existingEnrollment] result:",
+        existingEnrollment ? existingEnrollment.toJSON() : null,
+      );
+    } catch (findEnrollmentError) {
+      console.error(
+        "🔴 [FIND existingEnrollment] error.name:",
+        findEnrollmentError.name,
+      );
+      console.error(
+        "🔴 [FIND existingEnrollment] error.message:",
+        findEnrollmentError.message,
+      );
+      throw findEnrollmentError;
+    }
 
     if (existingEnrollment) {
-      // ถ้าเคยมีรายการแล้วแต่สถานะยังเป็น pending เราอาจจะอัปเดตสถานะแทนการสร้างใหม่
       if (existingEnrollment.status === "pending" && status === "success") {
-        await existingEnrollment.update({ status: "success" });
-        return res.status(200).json({
-          status: "success",
-          message: "อัปเดตสถานะการชำระเงินสำเร็จ",
-          data: existingEnrollment,
-        });
+        try {
+          await existingEnrollment.update({ status: "success" });
+          console.log(
+            "✅ [UPDATE existingEnrollment] updated to success:",
+            existingEnrollment.enrollment_id || existingEnrollment.id,
+          );
+          return res.status(200).json({
+            status: "success",
+            message: "อัปเดตสถานะการชำระเงินสำเร็จ",
+            data: existingEnrollment,
+          });
+        } catch (updateEnrollmentError) {
+          console.error(
+            "🔴 [UPDATE existingEnrollment] error.name:",
+            updateEnrollmentError.name,
+          );
+          console.error(
+            "🔴 [UPDATE existingEnrollment] error.message:",
+            updateEnrollmentError.message,
+          );
+          if (updateEnrollmentError.errors) {
+            console.error(
+              "🔴 [UPDATE existingEnrollment] fields:",
+              updateEnrollmentError.errors.map((e) => ({
+                path: e.path,
+                value: e.value,
+                message: e.message,
+              })),
+            );
+          }
+          throw updateEnrollmentError;
+        }
       }
+
+      console.warn(
+        "⚠️ [enrollments] duplicate enrollment blocked:",
+        `user_id=${user_id}, course_id=${course_id}, existing_status=${existingEnrollment.status}`,
+      );
       return res
         .status(400)
         .json({ status: "error", message: "คุณได้ลงทะเบียนคอร์สนี้ไปแล้ว" });
     }
 
     // 2. ดึงข้อมูลคอร์ส
-    const course = await Course.findOne({
-      where: { course_id },
-      attributes: ["fee"],
-    });
+    let course;
+    try {
+      course = await Course.findOne({
+        where: { course_id },
+        attributes: ["fee"],
+      });
+      console.log("🔍 [FIND course] result:", course ? course.toJSON() : null);
+    } catch (findCourseError) {
+      console.error("🔴 [FIND course] error.name:", findCourseError.name);
+      console.error("🔴 [FIND course] error.message:", findCourseError.message);
+      throw findCourseError;
+    }
 
     if (!course) {
+      console.warn("⚠️ [enrollments] course not found:", course_id);
       return res
         .status(404)
         .json({ status: "error", message: "ไม่พบข้อมูลคอร์ส" });
     }
 
+    // ดึงข้อมูล User เพื่อเช็ค role และหา iduser_external
+    let user;
+    try {
+      user = await User.findOne({
+        where: { user_id },
+        attributes: ["role", "iduser_External"],
+      });
+      console.log("🔍 [FIND user] result:", user ? user.toJSON() : null);
+    } catch (findUserError) {
+      console.error("🔴 [FIND user] error.name:", findUserError.name);
+      console.error("🔴 [FIND user] error.message:", findUserError.message);
+      throw findUserError;
+    }
+
+    const iduserExternal =
+      user && user.role === "employee" ? user.iduser_External : null;
+
     const currentFee = parseFloat(course.fee);
-    await Course.increment("count", {
-      by: 1,
-      where: { course_id: course_id },
-    });
+    console.log("💰 [enrollments] currentFee:", currentFee);
+
+    try {
+      await Course.increment("count", {
+        by: 1,
+        where: { course_id: course_id },
+      });
+      console.log("✅ [Course.increment] count +1 for course_id:", course_id);
+    } catch (incrementError) {
+      console.error("🔴 [Course.increment] error.name:", incrementError.name);
+      console.error(
+        "🔴 [Course.increment] error.message:",
+        incrementError.message,
+      );
+      throw incrementError;
+    }
 
     // 3. สร้างรายการ Enrollment
-    const newEnrollment = await Enrollment.create({
-      user_id,
-      course_id,
-      price_at_purchase: currentFee,
-      payment_method,
-      payment_proof,
-      status: currentFee === 0 || status === "success" ? "success" : "pending",
-    });
+    let newEnrollment;
+    try {
+      const enrollmentPayload = {
+        user_id,
+        course_id,
+        price_at_purchase: currentFee,
+        payment_method,
+        payment_proof,
+        iduser_External: iduserExternal,
+        status:
+          currentFee === 0 || status === "success" ? "success" : "pending",
+      };
+      console.log(
+        "📝 [CREATE newEnrollment] payload attempted:",
+        enrollmentPayload,
+      );
+
+      newEnrollment = await Enrollment.create(enrollmentPayload);
+      console.log("✅ [CREATE newEnrollment] created:", newEnrollment.toJSON());
+    } catch (createEnrollmentError) {
+      console.error(
+        "🔴 [CREATE newEnrollment] error.name:",
+        createEnrollmentError.name,
+      );
+      console.error(
+        "🔴 [CREATE newEnrollment] error.message:",
+        createEnrollmentError.message,
+      );
+      if (createEnrollmentError.errors) {
+        console.error(
+          "🔴 [CREATE newEnrollment] fields:",
+          createEnrollmentError.errors.map((e) => ({
+            path: e.path,
+            value: e.value,
+            type: e.type,
+            message: e.message,
+          })),
+        );
+      }
+      if (createEnrollmentError.parent) {
+        console.error(
+          "🔴 [CREATE newEnrollment] sqlMessage:",
+          createEnrollmentError.parent.sqlMessage,
+        );
+        console.error(
+          "🔴 [CREATE newEnrollment] sql code:",
+          createEnrollmentError.parent.code,
+        );
+      }
+      throw createEnrollmentError;
+    }
 
     return res.status(201).json({
       status: "success",
@@ -518,6 +766,8 @@ const enrollments = async (req, res) => {
       data: newEnrollment,
     });
   } catch (error) {
+    console.error("🔴 [enrollments] Unhandled error name:", error.name);
+    console.error("🔴 [enrollments] Unhandled error message:", error.message);
     return res.status(500).json({ status: "error", message: error.message });
   }
 };
@@ -711,13 +961,12 @@ const updateStudentProgress = async (req, res) => {
   } = req.body;
 
   try {
-    // ใช้ station_id และ video_name ร่วมกันในการค้นหา
     let progress = await User_Progress.findOne({
       where: {
         user_id,
         course_id,
         station_id,
-        video_name, // เปลี่ยนมาใช้ชื่อวิดีโอแทน index
+        video_name,
       },
     });
 
@@ -738,11 +987,21 @@ const updateStudentProgress = async (req, res) => {
         is_completed: newPercent >= 95 || progress.is_completed,
       });
     } else {
+      // ดึงข้อมูล User เพื่อเช็ค role และหา iduser_external
+      const user = await User.findOne({
+        where: { user_id },
+        attributes: ["role", "iduser_External"],
+      });
+
+      const iduserExternal =
+        user && user.role === "employee" ? user.iduser_External : null;
+
       progress = await User_Progress.create({
         user_id,
         course_id,
         station_id,
-        video_name, // บันทึกชื่อวิดีโอ
+        video_name,
+        iduser_External: iduserExternal,
         last_watched_second: last_second,
         max_watched_second: last_second,
         progress_percent: percent,
@@ -1103,6 +1362,108 @@ const ChangePassword = async (req, res) => {
   }
 };
 
+const getProgressCourseByiduserExternal = async (req, res) => {
+  const { iduser_External } = req.body;
+
+  console.log("📥 [getProgressCourseByiduserExternal] incoming:", {
+    iduser_External,
+  });
+
+  try {
+    if (!iduser_External) {
+      return res.status(400).json({
+        status: "error",
+        message: "กรุณาระบุ iduser_External",
+      });
+    }
+
+    // 1. ดึงข้อมูล User_Progress ทั้งหมดของ iduser_External นี้
+    let progressList;
+    try {
+      progressList = await User_Progress.findAll({
+        where: { iduser_External },
+        attributes: { exclude: ["createdAt", "updatedAt"] },
+        order: [["updatedAt", "DESC"]],
+      });
+      console.log("🔍 [FIND User_Progress] count:", progressList.length);
+    } catch (findProgressError) {
+      console.error(
+        "🔴 [FIND User_Progress] error.name:",
+        findProgressError.name,
+      );
+      console.error(
+        "🔴 [FIND User_Progress] error.message:",
+        findProgressError.message,
+      );
+      throw findProgressError;
+    }
+
+    if (progressList.length === 0) {
+      return res.status(200).json({
+        status: "success",
+        message: "ไม่พบข้อมูล progress",
+        data: [],
+      });
+    }
+
+    // 2. ดึง course_id ที่ไม่ซ้ำกันออกมา แล้วดึงข้อมูล Course ทั้งหมดในครั้งเดียว
+    const courseIds = [
+      ...new Set(progressList.map((p) => p.course_id).filter(Boolean)),
+    ];
+    console.log("🔍 [unique course_ids]:", courseIds);
+
+    let courses;
+    try {
+      courses = await Course.findAll({
+        where: { course_id: courseIds },
+        attributes: { exclude: ["status", "tag", "createdAt", "updatedAt"] },
+      });
+      console.log("🔍 [FIND Course] count:", courses.length);
+    } catch (findCourseError) {
+      console.error("🔴 [FIND Course] error.name:", findCourseError.name);
+      console.error("🔴 [FIND Course] error.message:", findCourseError.message);
+      throw findCourseError;
+    }
+
+    // 3. จัดกลุ่มใหม่: เอา course ขึ้นเป็นระดับบนสุด แล้วรวม progress ทั้งหมดของ course นั้นไว้ด้วยกัน
+    const courseGroupMap = {}; // course_id -> { ...courseData, progress: [...] }
+
+    courses.forEach((c) => {
+      courseGroupMap[c.course_id] = {
+        ...c.toJSON(),
+        progress: [],
+      };
+    });
+
+    progressList.forEach((p) => {
+      const plain = p.toJSON();
+      const { course_id, ...progressOnly } = plain; // ตัด course_id ออกจาก progress object เพราะซ้ำกับ key ข้างนอกแล้ว
+
+      if (courseGroupMap[course_id]) {
+        courseGroupMap[course_id].progress.push(progressOnly);
+      }
+    });
+
+    const result = Object.values(courseGroupMap);
+
+    return res.status(200).json({
+      status: "success",
+      message: "ดึงข้อมูล progress สำเร็จ",
+      data: result,
+    });
+  } catch (error) {
+    console.error(
+      "🔴 [getProgressCourseByiduserExternal] Unhandled error name:",
+      error.name,
+    );
+    console.error(
+      "🔴 [getProgressCourseByiduserExternal] Unhandled error message:",
+      error.message,
+    );
+    return res.status(500).json({ status: "error", message: error.message });
+  }
+};
+
 module.exports = {
   getCourse,
   register,
@@ -1121,4 +1482,5 @@ module.exports = {
   getLastWatching,
   ChangePassword,
   updateLearningStatus,
+  getProgressCourseByiduserExternal,
 };

@@ -16,6 +16,7 @@ const {
   updateLearningStatus,
   forgotPassword,
   ChangePassword,
+  getProgressCourseByiduserExternal,
 } = require("../controller/user.js");
 const { authUser, identifyUser } = require("../middleware/auth.js");
 
@@ -45,5 +46,6 @@ router.post("/getLastWhatching", authUser, getLastWatching);
 router.post("/updateLearningStatus", authUser, updateLearningStatus);
 router.post("/forgotPassword", forgotPassword);
 router.post("/ChangePassword", authUser, ChangePassword);
+router.post("/progress-by-external-user", getProgressCourseByiduserExternal);
 
 module.exports = router;

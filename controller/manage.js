@@ -287,7 +287,7 @@ const subscribeProgress = (req, res) => {
 
 const newCourse = async (req, res) => {
   try {
-    const { course_name, category_id, fee, detail, image } = req.body;
+    const { course_name, category_id, fee, detail, image, tag } = req.body;
 
     // 1. ตรวจสอบข้อมูลที่จำเป็น
     if (!course_name || !category_id) {
@@ -318,6 +318,7 @@ const newCourse = async (req, res) => {
       fee: fee || 0.0,
       detail,
       image,
+      tag: tag || "all", // employee | user | all (default: all)
       count: 0, // กำหนดเป็น 0 ตามที่คุณต้องการ (ใน Model มี defaultValue แล้วแต่ใส่ไว้เพื่อความชัวร์)
     });
 
@@ -340,7 +341,7 @@ const UpdateCourse = async (req, res) => {
   try {
     // รับ course_id จาก params หรือ body ก็ได้ (แนะนำ params สำหรับความชัดเจน)
     const { course_id } = req.params;
-    const { course_name, category_id, fee, detail, image } = req.body;
+    const { course_name, category_id, fee, detail, image, tag } = req.body;
 
     // 1. ค้นหาคอร์สที่ต้องการอัปเดต
     const course = await Course.findOne({
@@ -361,6 +362,7 @@ const UpdateCourse = async (req, res) => {
       fee: fee !== undefined ? fee : course.fee,
       detail: detail !== undefined ? detail : course.detail,
       image: image || course.image,
+      tag: tag || course.tag,
     });
 
     res.status(200).json({

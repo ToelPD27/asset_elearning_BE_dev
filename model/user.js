@@ -15,6 +15,11 @@ module.exports = (sequelize) => {
         allowNull: false,
         unique: "idx_unique_user_id",
       },
+      iduser_External: {
+        type: DataTypes.STRING(50),
+        allowNull: false,
+        unique: "idx_unique_id_user",
+      },
       prefix: {
         type: DataTypes.ENUM("Mr.", "Ms.", "Mrs.", "Dr."),
         allowNull: true,
@@ -80,6 +85,14 @@ module.exports = (sequelize) => {
         defaultValue: "internal",
       },
       refreshToken: {
+        type: DataTypes.TEXT,
+        allowNull: true, // ใช้สำหรับระบบ Auto Login
+      },
+      accessToken_External: {
+        type: DataTypes.TEXT,
+        allowNull: true, // ใช้สำหรับระบบ Auto Login
+      },
+      refreshToken_External: {
         type: DataTypes.TEXT,
         allowNull: true, // ใช้สำหรับระบบ Auto Login
       },

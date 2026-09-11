@@ -13,6 +13,12 @@ module.exports = (sequelize) => {
         type: DataTypes.STRING(50),
         allowNull: false,
       },
+      // Matches User Primary Key
+      iduser_External: {
+        type: DataTypes.STRING(50),
+        allowNull: false,
+        comment: "Reference to User ID",
+      },
       course_id: {
         type: DataTypes.STRING(50),
         allowNull: false,

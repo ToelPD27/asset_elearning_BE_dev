@@ -53,6 +53,13 @@ module.exports = (sequelize) => {
         comment:
           "สถานะคอร์ส: active=เปิดใช้งาน, inactive=ปิดใช้งาน, maintenance=ปิดปรับปรุง",
       },
+      tag: {
+        type: DataTypes.ENUM("employee", "user", "all"),
+        allowNull: false,
+        defaultValue: "all",
+        comment:
+          "กลุ่มที่มองเห็นคอร์สนี้: employee=พนักงานเท่านั้น, user=ผู้ใช้ทั่วไปเท่านั้น, all=ทั้งคู่",
+      },
     },
     {
       tableName: "courses",

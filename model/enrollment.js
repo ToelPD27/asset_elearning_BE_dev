@@ -10,6 +10,12 @@ module.exports = (sequelize) => {
         primaryKey: true,
       },
       // Matches User Primary Key
+      iduser_External: {
+        type: DataTypes.STRING(50),
+        allowNull: false,
+        comment: "Reference to User ID",
+      },
+      
       user_id: {
         type: DataTypes.STRING(50),
         allowNull: false,
@@ -22,7 +28,7 @@ module.exports = (sequelize) => {
         comment: "Reference to Course Code (e.g., CRS001)",
       },
       payment_method: {
-        type: DataTypes.ENUM("slip", "auto_payment", "free"),
+        type: DataTypes.ENUM("slip", "auto_payment", "free", "employee"),
         allowNull: false,
         defaultValue: "slip",
       },
